@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import requests
+from datetime import datetime
 from fastapi import FastAPI, Request
 from groq import Groq
 
@@ -23,31 +24,39 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     first_name TEXT,
-    username TEXT
+    username TEXT,
+    phone TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    role TEXT,
+    content TEXT,
+    created_at TEXT
 )
 """)
 
 conn.commit()
 
-# ===== ИНФОРМАЦИЯ О КОМПАНИИ =====
+# ===== ИНФОРМАЦИЯ =====
 
 COMPANY_INFO = (
     "🏢 ООО «Маркетинг‑технолоджи»\n\n"
-    "Работаем с 2015 года в сфере рекрутинга и подбора персонала.\n\n"
+    "Работаем с 2015 года в сфере рекрутинга и подбора персонала.\n"
+    "Сотрудничаем с крупными работодателями."
+)
+
+CONDITIONS_INFO = (
+    "💰 Условия работы:\n\n"
     "✅ Зарплата от 260 000 руб.\n"
     "✅ Социальный пакет\n"
     "✅ Полная поддержка государства\n"
-    "✅ Официальное трудоустройство\n\n"
-    "Подбираем сотрудников по всей России."
-)
-
-JOB_BENEFITS = (
-    "💼 Условия работы:\n\n"
-    "• Зарплата от 260 000 руб.\n"
-    "• Социальный пакет\n"
-    "• Государственная поддержка\n"
-    "• Официальное оформление\n"
-    "• Возможность карьерного роста"
+    "✅ Горячее 3‑разовое питание\n"
+    "✅ Комфортное размещение в центре города\n"
+    "✅ Проводится обучение от 2 месяцев"
 )
 
 MANAGER_CONTACT = (
@@ -75,23 +84,47 @@ def send_message(chat_id, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
 
-def notify_admin(text):
+def save_history(user_id, role, content):
+    cursor.execute(
+        "INSERT INTO history (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+        (user_id, role, content, datetime.now().isoformat())
+    )
+    conn.commit()
+
+def get_last_messages(user_id, limit=5):
+    cursor.execute(
+        "SELECT role, content FROM history WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+        (user_id, limit)
+    )
+    rows = cursor.fetchall()
+    return list(reversed(rows))
+
+def notify_admin(user_id, first_name, username):
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    cursor.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
+    phone = cursor.fetchone()
+    phone = phone[0] if phone and phone[0] else "Не указан"
+
+    history = get_last_messages(user_id)
+
+    history_text = ""
+    for role, content in history:
+        prefix = "👤" if role == "user" else "🤖"
+        history_text += f"{prefix} {content}\n"
+
+    text = (
+        f"🔥 ГОРЯЧИЙ КАНДИДАТ\n\n"
+        f"🕒 {now}\n\n"
+        f"Имя: {first_name}\n"
+        f"Username: @{username}\n"
+        f"ID: {user_id}\n"
+        f"Телефон: {phone}\n\n"
+        f"💬 Последние сообщения:\n"
+        f"{history_text}"
+    )
+
     send_message(ADMIN_ID, text)
-
-# ===== СИСТЕМНЫЙ ПРОМПТ =====
-
-SYSTEM_PROMPT = """
-Ты — HR-бот компании «Маркетинг-технолоджи».
-
-Веди живой диалог с кандидатом:
-- интересуйся его опытом
-- рассказывай об условиях работы
-- подчёркивай зарплату от 260 000 руб.
-- упоминай социальный пакет и поддержку
-
-Будь уверенным, но не навязчивым.
-Отвечай на русском языке.
-"""
 
 # ===== WEBHOOK =====
 
@@ -102,12 +135,12 @@ async def webhook(request: Request):
     if "message" not in data:
         return {"ok": True}
 
-    message = data["message"]
-    chat_id = message["chat"]["id"]
-    user_id = message["from"]["id"]
-    first_name = message["from"].get("first_name", "")
-    username = message["from"].get("username", "")
-    text = message.get("text", "")
+    msg = data["message"]
+    chat_id = msg["chat"]["id"]
+    user_id = msg["from"]["id"]
+    first_name = msg["from"].get("first_name", "")
+    username = msg["from"].get("username", "")
+    text = msg.get("text", "")
 
     cursor.execute(
         "INSERT OR IGNORE INTO users (user_id, first_name, username) VALUES (?, ?, ?)",
@@ -115,69 +148,61 @@ async def webhook(request: Request):
     )
     conn.commit()
 
-    # ===== СТАРТ =====
     if text == "/start":
         send_message(
             chat_id,
             f"Здравствуйте, {first_name}! 👋\n\n"
             "Мы предлагаем стабильную работу с высокой оплатой.\n"
-            "Зарплата от 260 000 руб. + соцпакет.\n\n"
             "Выберите пункт меню:",
             main_menu()
         )
         return {"ok": True}
-
-    # ===== КНОПКИ =====
 
     if text == "🏢 О компании":
         send_message(chat_id, COMPANY_INFO, main_menu())
         return {"ok": True}
 
     if text == "💰 Условия":
-        send_message(chat_id, JOB_BENEFITS, main_menu())
+        send_message(chat_id, CONDITIONS_INFO, main_menu())
         return {"ok": True}
 
     if text == "📞 Связаться с менеджером":
         send_message(chat_id, MANAGER_CONTACT, main_menu())
-        notify_admin(
-            f"📞 Кандидат запросил менеджера:\n"
-            f"{first_name} (@{username})\nID: {user_id}"
-        )
+        notify_admin(user_id, first_name, username)
         return {"ok": True}
 
     if text == "💼 Вакансии":
         send_message(
             chat_id,
-            "Открытые вакансии:\n\n"
+            "Открытые вакансии:\n"
             "• Крановщик\n"
-            "• Водитель (кат. C или D)\n"
+            "• Водитель\n"
             "• Электрик\n"
             "• Повар\n"
             "• Каменщик\n"
             "• Экскаваторщик\n"
             "• Газоэлектросварщик\n\n"
-            "• Оператор БПЛА\n\n"
-            "Какая вакансия вас интересует?",
+            "Расскажите о своём опыте.",
             main_menu()
         )
         return {"ok": True}
 
-    # ===== AI ДИАЛОГ =====
+    # ===== AI =====
 
-    try:
-        response = groq.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text}
-            ],
-            max_tokens=500,
-        )
+    save_history(user_id, "user", text)
 
-        reply = response.choices[0].message.content
-        send_message(chat_id, reply, main_menu())
+    response = groq.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": "Ты HR-бот. Веди живой диалог."},
+            {"role": "user", "content": text}
+        ],
+        max_tokens=400,
+    )
 
-    except Exception:
-        send_message(chat_id, "⚠ Произошла ошибка. Попробуйте позже.", main_menu())
+    reply = response.choices[0].message.content
+
+    save_history(user_id, "assistant", reply)
+    send_message(chat_id, reply, main_menu())
 
     return {"ok": True}
