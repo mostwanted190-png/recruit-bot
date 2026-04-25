@@ -1,9 +1,9 @@
 import os
 import sqlite3
 import requests
+from datetime import datetime
 from fastapi import FastAPI, Request
 from groq import Groq
-from datetime import datetime
 
 app = FastAPI()
 
@@ -24,8 +24,17 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     first_name TEXT,
-    username TEXT,
-    phone TEXT
+    username TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    role TEXT,
+    content TEXT,
+    created_at TEXT
 )
 """)
 
@@ -45,9 +54,9 @@ CONDITIONS_INFO = (
     "✅ Социальный пакет\n"
     "✅ Полная поддержка государства\n"
     "✅ Горячее 3‑разовое питание\n"
-    "✅ Комфортное размещение в центре города (во время обучения)\n"
+    "✅ Комфортное размещение в центре города(во время обучения)\n"
     "✅ Проводится обучение от 2 месяцев"
-)   
+)
 
 MANAGER_CONTACT = (
     "📞 Связаться с менеджером:\n\n"
@@ -74,15 +83,41 @@ def send_message(chat_id, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
 
+def save_history(user_id, role, content):
+    cursor.execute(
+        "INSERT INTO history (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+        (user_id, role, content, datetime.now().isoformat())
+    )
+    conn.commit()
+
+def get_last_messages(user_id, limit=5):
+    cursor.execute(
+        "SELECT role, content FROM history WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+        (user_id, limit)
+    )
+    rows = cursor.fetchall()
+    return list(reversed(rows))
+
 def notify_admin(user_id, first_name, username):
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    history = get_last_messages(user_id)
+
+    history_text = ""
+    for role, content in history:
+        prefix = "👤" if role == "user" else "🤖"
+        history_text += f"{prefix} {content}\n"
+
     text = (
-        f"📞 Кандидат запросил менеджера\n\n"
+        f"🔥 Кандидат запросил менеджера\n\n"
         f"🕒 {now}\n"
         f"Имя: {first_name}\n"
         f"Username: @{username}\n"
-        f"ID: {user_id}"
+        f"ID: {user_id}\n\n"
+        f"💬 Последние сообщения:\n"
+        f"{history_text}"
     )
+
     send_message(ADMIN_ID, text)
 
 # ===== WEBHOOK =====
@@ -111,8 +146,7 @@ async def webhook(request: Request):
         send_message(
             chat_id,
             f"Здравствуйте, {first_name}! 👋\n\n"
-            "Я HR‑бот компании.\n"
-            "Помогу вам разобраться с вакансиями.",
+            "Я HR‑бот компании.",
             main_menu()
         )
         return {"ok": True}
@@ -135,35 +169,33 @@ async def webhook(request: Request):
             chat_id,
             "Открытые вакансии:\n"
             "• Крановщик\n"
-            "• Водитель (кат. C или D)\n"
+            "• Водитель\n"
             "• Электрик\n"
             "• Повар\n"
             "• Каменщик\n"
-            "• Экскаваторщик\n"
-            "• Газоэлектросварщик\n\n"
             "• Оператор БПЛА\n"
-            
+            "• Газоэлектросварщик\n\n"
             "Расскажите о своём опыте.",
             main_menu()
         )
         return {"ok": True}
 
-    # ===== AI ДИАЛОГ =====
+    # ===== AI =====
 
-    try:
-        response = groq.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "Ты HR-бот. Веди живой диалог, помогай кандидату."},
-                {"role": "user", "content": text}
-            ],
-            max_tokens=400,
-        )
+    save_history(user_id, "user", text)
 
-        reply = response.choices[0].message.content
-        send_message(chat_id, reply, main_menu())
+    response = groq.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": "Ты HR-бот. Веди живой диалог."},
+            {"role": "user", "content": text}
+        ],
+        max_tokens=400,
+    )
 
-    except Exception:
-        send_message(chat_id, "⚠ Произошла ошибка. Попробуйте позже.", main_menu())
+    reply = response.choices[0].message.content
+
+    save_history(user_id, "assistant", reply)
+    send_message(chat_id, reply, main_menu())
 
     return {"ok": True}
