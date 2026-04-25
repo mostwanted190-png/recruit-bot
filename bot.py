@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import requests
+import re
 from datetime import datetime
 from fastapi import FastAPI, Request
 from groq import Groq
@@ -25,106 +26,47 @@ CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     first_name TEXT,
     username TEXT,
-    phone TEXT
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    role TEXT,
-    content TEXT,
-    created_at TEXT
+    phone TEXT,
+    score INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'new'
 )
 """)
 
 conn.commit()
 
-# ===== ИНФОРМАЦИЯ =====
+# ===== СИСТЕМНЫЙ ПРОМПТ =====
 
-COMPANY_INFO = (
-    "🏢 ООО «Маркетинг‑технолоджи»\n\n"
-    "Работаем с 2015 года в сфере рекрутинга и подбора персонала.\n"
-    "Сотрудничаем с крупными работодателями."
-)
+SYSTEM_PROMPT = """
+Ты — HR-бот компании.
+Твоя задача — оценить кандидата.
 
-CONDITIONS_INFO = (
-    "💰 Условия работы:\n\n"
-    "✅ Зарплата от 260 000 руб.\n"
-    "✅ Социальный пакет\n"
-    "✅ Полная поддержка государства\n"
-    "✅ Горячее 3‑разовое питание\n"
-    "✅ Комфортное размещение в центре города\n"
-    "✅ Проводится обучение от 2 месяцев"
-)
+Правила:
+1. Веди естественный диалог.
+2. Выясни опыт, мотивацию, готовность.
+3. Оцени кандидата по шкале 0–10.
+4. В КОНЦЕ ответа добавь метку вида:
+[SCORE:7]
 
-MANAGER_CONTACT = (
-    "📞 Связаться с менеджером:\n\n"
-    "Артём Викторович\n"
-    "Телефон: +7 919 888 3009"
-)
-
-# ===== МЕНЮ =====
-
-def main_menu():
-    return {
-        "keyboard": [
-            ["💼 Вакансии", "🏢 О компании"],
-            ["💰 Условия", "📞 Связаться с менеджером"]
-        ],
-        "resize_keyboard": True
-    }
+Не объясняй балл пользователю.
+Пиши метку только один раз в конце.
+"""
 
 # ===== УТИЛИТЫ =====
 
-def send_message(chat_id, text, reply_markup=None):
-    payload = {"chat_id": chat_id, "text": text}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    requests.post(f"{TELEGRAM_API}/sendMessage", json=payload)
-
-def save_history(user_id, role, content):
-    cursor.execute(
-        "INSERT INTO history (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-        (user_id, role, content, datetime.now().isoformat())
-    )
-    conn.commit()
-
-def get_last_messages(user_id, limit=5):
-    cursor.execute(
-        "SELECT role, content FROM history WHERE user_id = ? ORDER BY id DESC LIMIT ?",
-        (user_id, limit)
-    )
-    rows = cursor.fetchall()
-    return list(reversed(rows))
-
-def notify_admin(user_id, first_name, username):
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
-
-    cursor.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
-    phone = cursor.fetchone()
-    phone = phone[0] if phone and phone[0] else "Не указан"
-
-    history = get_last_messages(user_id)
-
-    history_text = ""
-    for role, content in history:
-        prefix = "👤" if role == "user" else "🤖"
-        history_text += f"{prefix} {content}\n"
-
-    text = (
-        f"🔥 ГОРЯЧИЙ КАНДИДАТ\n\n"
-        f"🕒 {now}\n\n"
-        f"Имя: {first_name}\n"
-        f"Username: @{username}\n"
-        f"ID: {user_id}\n"
-        f"Телефон: {phone}\n\n"
-        f"💬 Последние сообщения:\n"
-        f"{history_text}"
+def send_message(chat_id, text):
+    requests.post(
+        f"{TELEGRAM_API}/sendMessage",
+        json={"chat_id": chat_id, "text": text}
     )
 
+def notify_admin(text):
     send_message(ADMIN_ID, text)
+
+def extract_score(text):
+    match = re.search(r"\[SCORE:(\d+)\]", text)
+    if match:
+        return int(match.group(1))
+    return None
 
 # ===== WEBHOOK =====
 
@@ -149,60 +91,81 @@ async def webhook(request: Request):
     conn.commit()
 
     if text == "/start":
-        send_message(
-            chat_id,
-            f"Здравствуйте, {first_name}! 👋\n\n"
-            "Мы предлагаем стабильную работу с высокой оплатой.\n"
-            "Выберите пункт меню:",
-            main_menu()
-        )
-        return {"ok": True}
-
-    if text == "🏢 О компании":
-        send_message(chat_id, COMPANY_INFO, main_menu())
-        return {"ok": True}
-
-    if text == "💰 Условия":
-        send_message(chat_id, CONDITIONS_INFO, main_menu())
-        return {"ok": True}
-
-    if text == "📞 Связаться с менеджером":
-        send_message(chat_id, MANAGER_CONTACT, main_menu())
-        notify_admin(user_id, first_name, username)
-        return {"ok": True}
-
-    if text == "💼 Вакансии":
-        send_message(
-            chat_id,
-            "Открытые вакансии:\n"
-            "• Крановщик\n"
-            "• Водитель\n"
-            "• Электрик\n"
-            "• Повар\n"
-            "• Каменщик\n"
-            "• Экскаваторщик\n"
-            "• Газоэлектросварщик\n\n"
-            "Расскажите о своём опыте.",
-            main_menu()
-        )
+        send_message(chat_id,
+                     "Здравствуйте! 👋\n\n"
+                     "Расскажите немного о своём опыте работы.")
         return {"ok": True}
 
     # ===== AI =====
 
-    save_history(user_id, "user", text)
-
     response = groq.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
-            {"role": "system", "content": "Ты HR-бот. Веди живой диалог."},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": text}
         ],
         max_tokens=400,
     )
 
-    reply = response.choices[0].message.content
+    ai_reply = response.choices[0].message.content
 
-    save_history(user_id, "assistant", reply)
-    send_message(chat_id, reply, main_menu())
+    score = extract_score(ai_reply)
+
+    clean_reply = re.sub(r"\[SCORE:\d+\]", "", ai_reply).strip()
+
+    send_message(chat_id, clean_reply)
+
+    if score is not None:
+        cursor.execute(
+            "UPDATE users SET score = ? WHERE user_id = ?",
+            (score, user_id)
+        )
+        conn.commit()
+
+        # ✅ ГОРЯЧИЙ
+        if score >= 7:
+            cursor.execute(
+                "UPDATE users SET status = 'approved' WHERE user_id = ?",
+                (user_id,)
+            )
+            conn.commit()
+
+            send_message(chat_id,
+                         "✅ Вы нам подходите!\n\n"
+                         "Свяжитесь с менеджером:\n"
+                         "Артём Викторович\n"
+                         "📞 +7 919 888 3009")
+
+            notify_admin(
+                f"🔥 ГОРЯЧИЙ кандидат\n"
+                f"Имя: {first_name}\n"
+                f"Username: @{username}\n"
+                f"ID: {user_id}\n"
+                f"Score: {score}"
+            )
+
+        # ⚠ Средний
+        elif 4 <= score <= 6:
+            notify_admin(
+                f"⚠ Средний кандидат\n"
+                f"Имя: {first_name}\n"
+                f"ID: {user_id}\n"
+                f"Score: {score}"
+            )
+
+        # ❌ Слабый
+        else:
+            cursor.execute(
+                "UPDATE users SET status = 'rejected' WHERE user_id = ?",
+                (user_id,)
+            )
+            conn.commit()
+
+            notify_admin(
+                f"❌ Слабый кандидат\n"
+                f"Имя: {first_name}\n"
+                f"ID: {user_id}\n"
+                f"Score: {score}"
+            )
 
     return {"ok": True}
