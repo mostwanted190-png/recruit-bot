@@ -72,6 +72,18 @@ def set_step(user_id, step):
     cursor.execute("UPDATE forms SET step = ? WHERE user_id = ?", (step, user_id))
     conn.commit()
 
+# ===== ГЛАВНОЕ МЕНЮ =====
+
+def main_menu():
+    return {
+        "keyboard": [
+            ["📝 Начать анкету"],
+            ["📞 Связаться с менеджером"],
+            ["🏢 О компании"]
+        ],
+        "resize_keyboard": True
+    }
+
 # ===== WEBHOOK =====
 
 @app.post("/")
@@ -88,62 +100,91 @@ async def webhook(request: Request):
 
     step = get_user(user_id)
 
-    if text == "/start":
+    # ===== ПЕРВОЕ СООБЩЕНИЕ =====
+    if step == 0 and text not in ["📝 Начать анкету"]:
+        send_message(
+            chat_id,
+            "Здравствуйте! 👋\n\n"
+            "Мы поможем вам трудоустроиться.\n\n"
+            "Выберите действие:",
+            main_menu()
+        )
+        return {"ok": True}
+
+    # ===== О КОМПАНИИ =====
+    if text == "🏢 О компании":
+        send_message(
+            chat_id,
+            "🏢 ООО «Маркетинг‑технолоджи»\n\n"
+            "Работаем с 2015 года в сфере рекрутинга и подбора персонала.\n"
+            "Сотрудничаем с крупными работодателями по всей России.\n\n"
+            "Мы помогаем кандидатам быстро найти работу, а компаниям — сотрудников.",
+            main_menu()
+        )
+        return {"ok": True}
+
+    # ===== СВЯЗЬ С МЕНЕДЖЕРОМ =====
+    if text == "📞 Связаться с менеджером":
+        send_message(
+            chat_id,
+            "📞 Контакт менеджера:\n\n"
+            "Иван Иванов\n"
+            "Телефон: +7 (999) 123‑45‑67\n"
+            "Telegram: @manager_username",
+            main_menu()
+        )
+        return {"ok": True}
+
+    # ===== НАЧАТЬ АНКЕТУ =====
+    if text == "📝 Начать анкету":
         keyboard = {"keyboard": [[v] for v in VACANCIES], "resize_keyboard": True}
         send_message(chat_id, "Выберите вакансию:", keyboard)
         set_step(user_id, 1)
         return {"ok": True}
 
-    # ===== ШАГ 1: ВАКАНСИЯ =====
+    # ===== АНКЕТА =====
     if step == 1:
         update_field(user_id, "specialization", text)
         send_message(chat_id, "Введите ФИО:")
         set_step(user_id, 2)
         return {"ok": True}
 
-    # ===== ШАГ 2: ФИО =====
     if step == 2:
         update_field(user_id, "fio", text)
         send_message(chat_id, "Дата рождения (дд.мм.гггг):")
         set_step(user_id, 3)
         return {"ok": True}
 
-    # ===== ШАГ 3: ДАТА РОЖДЕНИЯ =====
     if step == 3:
         update_field(user_id, "birth", text)
         send_message(chat_id, "Город проживания:")
         set_step(user_id, 4)
         return {"ok": True}
 
-    # ===== ШАГ 4: ГОРОД =====
     if step == 4:
         update_field(user_id, "city", text)
         send_message(chat_id, "Есть водительское удостоверение? (да/нет)")
         set_step(user_id, 5)
         return {"ok": True}
 
-    # ===== ШАГ 5: ПРАВА =====
     if step == 5:
         update_field(user_id, "license", text)
-        send_message(chat_id, "Опыт работы (лет и где работали):")
+        send_message(chat_id, "Опыт работы:")
         set_step(user_id, 6)
         return {"ok": True}
 
-    # ===== ШАГ 6: ОПЫТ =====
     if step == 6:
         update_field(user_id, "experience", text)
         send_message(chat_id, "Когда готовы приступить к работе?")
         set_step(user_id, 7)
         return {"ok": True}
 
-    # ===== ШАГ 7: ДАТА ВЫХОДА =====
     if step == 7:
         update_field(user_id, "start_date", text)
         send_message(chat_id, "Введите контактный телефон:")
         set_step(user_id, 8)
         return {"ok": True}
 
-    # ===== ШАГ 8: ТЕЛЕФОН =====
     if step == 8:
         update_field(user_id, "phone", text)
 
@@ -168,7 +209,13 @@ async def webhook(request: Request):
 
         notify_admin(text_admin)
 
-        send_message(chat_id, "✅ Спасибо! Ваша анкета отправлена менеджеру.")
+        send_message(
+            chat_id,
+            "✅ Спасибо! Ваша анкета отправлена менеджеру.\n"
+            "С вами свяжутся в ближайшее время.",
+            main_menu()
+        )
+
         set_step(user_id, 0)
         return {"ok": True}
 
